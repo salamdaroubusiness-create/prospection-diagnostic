@@ -1791,7 +1791,7 @@ function syncStart(){
 /* ---------- collecte automatique de toutes les informations ---------- */
 var CT_PCA={nom:'decideur',nomcomplet:'decideur',prenomnom:'decideur',nomprenom:'decideur',contact:'decideur',responsable:'decideur',decideur:'decideur',dirigeant:'decideur',entreprise:'nom',societe:'nom',raisonsociale:'nom',nomentreprise:'nom',nomdelentreprise:'nom',pays:'pays',ville:'ville',region:'region',secteur:'secteur',activite:'secteur',site:'site',siteweb:'site',url:'url',poste:'poste',fonction:'poste',tel:'tel',telephone:'tel',phone:'tel',mobile:'tel',whatsapp:'wa',email:'email',mail:'email',courriel:'email',notes:'notes',commentaire:'notes',message:'notes',description:'notes',blocages:'blocages',besoin:'blocages',besoins:'blocages'};
 var ctBusy={};
-function CT(){if(!S.collect)S.collect={src:[],log:[],seen:{},seq:1,auto:true};return S.collect;}
+function CT(){if(!S.collect)S.collect={src:[],log:[],seen:{},seq:1,auto:true};if(!S.collect.batches)S.collect.batches=[];return S.collect;}
 function ctLog(s,t,n,dup,err){var c=CT();c.log.unshift({d:new Date().toISOString(),s:s,t:t,n:n||0,dup:dup||0,err:!!err});if(c.log.length>60)c.log.length=60;}
 function ctMapRow(rec,dest){
   var o={},extra=[];
@@ -1810,25 +1810,39 @@ function ctMapRow(rec,dest){
   if(extra.length)o.notes=(o.notes?o.notes+'\n':'')+extra.join('\n');
   return o;
 }
-function ctIngest(recs,dest,canal,srcId){
+function ctIngest(recs,dest,canal,srcId,bname){
   var c=CT(),seen=c.seen[srcId]||(c.seen[srcId]=[]),n=0,dup=0;
   recs.forEach(function(rec){
     var o=ctMapRow(rec,dest);if(!o)return;
     var key=String(o.email||digits(o.telephone||o.tel||'').slice(-8)||o.nom).toLowerCase();
     if(seen.indexOf(key)>-1)return;
     seen.push(key);
-    if(dest==='prosp'){if(pcDup(o)){dup++;return;}o.source=canal||'Collecte automatique';pcAdd(o);n++;return;}
+    if(dest==='prosp'){if(pcDup(o)){dup++;return;}o.source=canal||'Collecte automatique';pcAdd(o).batch=srcId;n++;return;}
     if(isDup(o)){dup++;return;}
     if(CANAUX.indexOf(o.canal)<0)o.canal=canal||'Autre';
     if(STATUTS.indexOf(o.statut)<0)o.statut='Nouveau';
     o.dateSubmission=o.dateSubmission?fixDate(o.dateSubmission):today();
-    var p=newProspect(o);addHist(p,'Collecté automatiquement ('+(canal||'source')+')');n++;
+    var p=newProspect(o);p.batch=srcId;addHist(p,'Collecté automatiquement ('+(canal||'source')+')');n++;
   });
   while(seen.length>3000)seen.shift();
+  if(n){var b=c.batches.filter(function(x){return x.id===srcId;})[0];if(!b){b={id:srcId,nom:bname||canal||'Liste',dest:dest,d:new Date().toISOString()};c.batches.push(b);}b.last=new Date().toISOString();}
   return {n:n,dup:dup};
 }
 function ctFlat(x){var o={};Object.keys(x).forEach(function(k){var v=x[k];o[k]=(v&&typeof v==='object')?JSON.stringify(v):v;});return o;}
-function ctRefresh(){var d=$('#ctdyn');if(d&&route().v==='collecte'&&!$('#modal').innerHTML)d.innerHTML=ctDyn();}
+function ctRefresh(){if(route().v!=='collecte'||$('#modal').innerHTML)return;var d=$('#ctdyn');if(d)d.innerHTML=ctDyn();var f=$('#ctfiches');if(f)f.innerHTML=ctFiches();}
+var ctQ='';
+function ctCount(b){return (b.dest==='prosp'?PC().leads:S.prospects).filter(function(x){return x.batch===b.id;}).length;}
+function ctDelBatch(id){var c=CT();S.prospects=S.prospects.filter(function(x){return x.batch!==id;});PC().leads=PC().leads.filter(function(x){return x.batch!==id;});c.batches=c.batches.filter(function(x){return x.id!==id;});save();}
+function ctAll(){
+  var q=ctQ.toLowerCase(),out=[],bn=function(id){var b=CT().batches.filter(function(x){return x.id===id;})[0];return b?b.nom:'';};
+  S.prospects.forEach(function(p){out.push({k:'prospects',id:p.id,nom:p.nom||p.entreprise||'',sub:[p.entreprise,p.secteur].filter(Boolean).join(' · '),tel:p.telephone||'',l:bn(p.batch)});});
+  PC().leads.forEach(function(l){out.push({k:'prosp',id:l.id,nom:l.nom||'',sub:[l.ville,l.secteur].filter(Boolean).join(' · '),tel:l.tel||'',l:bn(l.batch)});});
+  return out.filter(function(x){return !q||(x.nom+' '+x.sub+' '+x.tel+' '+x.l).toLowerCase().indexOf(q)>-1;});
+}
+function ctFiches(){
+  var a=ctAll(),sh=a.slice(0,50);
+  return '<p class="small muted">'+a.length+' fiche'+(a.length>1?'s':'')+(a.length>50?' (50 affichées : affinez la recherche)':'')+'</p>'+(sh.length?'<div class="tbw"><table class="tb"><tbody>'+sh.map(function(x){return '<tr><td><b>'+esc(x.nom)+'</b><div class="small muted">'+esc(x.sub)+'</div></td><td>'+esc(x.tel)+'</td><td class="small muted">'+(x.k==='prosp'?'Prospection commerciale':'Prospects')+(x.l?' · '+esc(x.l):'')+'</td><td><button class="btn line sm" data-ct="delf" data-k="'+x.k+'" data-id="'+esc(x.id)+'" aria-label="Supprimer la fiche">✕</button></td></tr>';}).join('')+'</tbody></table></div>':'');
+}
 function ctRun(s){
   if(!s.url||ctBusy[s.id])return Promise.resolve();
   ctBusy[s.id]=1;
@@ -1836,7 +1850,7 @@ function ctRun(s){
     var recs=[];
     if(s.type==='json'){var j=JSON.parse(t),a=Array.isArray(j)?j:(j.rows||j.data||j.items||j.leads||j.orders||[]);recs=a.filter(function(x){return x&&typeof x==='object';}).map(ctFlat);}
     else{var rows=parseCSV(t);if(rows.length<2)throw new Error('Aucune ligne trouvée');var h=rows[0];recs=rows.slice(1).map(function(r){var o={};h.forEach(function(k,i){o[k]=r[i];});return o;});}
-    var res=ctIngest(recs,s.dest,s.canal||s.nom,s.id);
+    var res=ctIngest(recs,s.dest,s.canal||s.nom,s.id,s.nom);
     s.last=new Date().toISOString();s.err='';s.n=(s.n||0)+res.n;
     ctLog(s.nom,'Collecte',res.n,res.dup);save();
     if(res.n){toast(res.n+' nouvelle'+(res.n>1?'s':'')+' fiche'+(res.n>1?'s':'')+' collectée'+(res.n>1?'s':'')+' ('+s.nom+').');var rt=route().v;if(!$('#modal').innerHTML&&(rt==='dash'||rt==='prospects'||rt==='prosp'))render();}
@@ -1872,9 +1886,11 @@ function ctDyn(){
   var rows=c.src.map(function(s){
     return '<tr><td><b>'+esc(s.nom)+'</b><div class="small muted">'+(s.type==='json'?'Service web (JSON)':'Google Sheet / CSV')+'</div></td><td>'+(s.dest==='prosp'?'Prospection commerciale':'Prospects')+'</td><td>'+(s.every||15)+' min</td><td>'+ctWhen(s.last)+'</td><td>'+(s.n||0)+'</td><td>'+(s.err?'<span class="tag st-6">Erreur</span><div class="small muted">'+esc(s.err)+'</div>':(s.on?'<span class="tag st-5">Actif</span>':'<span class="tag st-0">En pause</span>'))+'</td><td><div class="row"><button class="btn line sm" data-ct="run" data-id="'+s.id+'">Collecter</button><button class="btn line sm" data-ct="toggle" data-id="'+s.id+'">'+(s.on?'Pause':'Activer')+'</button><button class="btn line sm" data-ct="del" data-id="'+s.id+'" aria-label="Supprimer la source">✕</button></div></td></tr>';
   }).join('');
+  var bats=c.batches.map(function(b){return '<tr><td><b>'+esc(b.nom)+'</b></td><td>'+(b.dest==='prosp'?'Prospection commerciale':'Prospects')+'</td><td>'+ctWhen(b.last||b.d)+'</td><td>'+ctCount(b)+' fiche(s)</td><td><button class="btn line sm" data-ct="delb" data-id="'+esc(b.id)+'">Supprimer la liste</button></td></tr>';}).join('');
   var log=c.log.slice(0,15).map(function(l){return '<tr><td>'+ctWhen(l.d)+'</td><td>'+esc(l.s)+'</td><td>'+(l.err?'<span class="muted">'+esc(l.t)+'</span>':'+ '+l.n+' ajoutée'+(l.n>1?'s':'')+(l.dup?', '+l.dup+' doublon'+(l.dup>1?'s':'')+' ignoré'+(l.dup>1?'s':''):''))+'</td></tr>';}).join('');
   return '<div class="kpis">'+kp.map(function(k){return '<div class="kpi'+k[2]+'"><b>'+k[0]+'</b><span>'+k[1]+'</span></div>';}).join('')+'</div>'+
    '<div class="panel"><h2>Sources connectées</h2><div class="tbw"><table class="tb"><thead><tr><th>Source</th><th>Destination</th><th>Fréquence</th><th>Dernière collecte</th><th>Collectés</th><th>État</th><th></th></tr></thead><tbody>'+site+rows+'</tbody></table></div></div>'+
+   '<div class="panel"><h2>Listes importées</h2>'+(bats?'<div class="tbw"><table class="tb"><tbody>'+bats+'</tbody></table></div>':'<p class="muted small">Aucune liste pour le moment : chaque import ou source apparaîtra ici et pourra être supprimé d’un clic, avec ses fiches.</p>')+'</div>'+
    '<div class="panel"><h2>Journal de collecte</h2>'+(log?'<div class="tbw"><table class="tb"><tbody>'+log+'</tbody></table></div>':'<p class="muted small">Aucune collecte pour le moment.</p>')+'</div>';
 }
 function viewCollecte(){
@@ -1884,7 +1900,8 @@ function viewCollecte(){
    '<div id="ctdyn">'+ctDyn()+'</div><div class="grid g2">'+
    '<div class="panel"><h2>Ajouter une source</h2>'+fld('ct-nom','Nom de la source','', 'text',' placeholder="Réponses du formulaire Google"')+fld('ct-url','Adresse du lien','', 'url',' placeholder="https://docs.google.com/spreadsheets/d/e/…/pub?output=csv"')+ctSel('ct-type','Type',[['csv','Google Sheet / Google Form / CSV en ligne'],['json','Service web (JSON)']],'csv')+ctSel('ct-dest','Où ranger les fiches',CT_DEST,'prospects')+ctSel('ct-canal','Canal (pour les prospects)',CANAUX.map(function(x){return [x,x];}),'Formulaire Google')+ctSel('ct-every','Vérifier toutes les',[['5','5 minutes'],['15','15 minutes'],['60','1 heure']],'15')+'<button class="btn" data-ct="add">Connecter et collecter</button>'+
    '<p class="small muted" style="margin-top:12px"><b>Google Form :</b> onglet Réponses → icône Sheets → Fichier → Partager → Publier sur le Web → format CSV → copier le lien ici.</p></div>'+
-   '<div class="panel"><h2>Collecte instantanée</h2><p class="small muted">Collez des messages, un annuaire, des e-mails, une conversation WhatsApp : e-mails, téléphones, noms et sites sont repérés automatiquement. Vous pouvez aussi importer un fichier CSV, JSON ou texte.</p><div class="fld"><textarea id="ct-txt" rows="7" placeholder="Nom : …&#10;Entreprise : …&#10;77 123 45 67 · contact@exemple.com"></textarea></div>'+ctSel('ct-dest2','Où ranger les fiches',CT_DEST,'prospects')+'<div class="row"><button class="btn" data-ct="extract">Extraire et ajouter</button><button class="btn line" data-ct="pickfile">Importer un fichier</button><input type="file" id="ct-file" accept=".csv,.json,.txt,text/*" hidden><button class="btn" data-ct="pickxls">Importer un fichier Excel</button><input type="file" id="ct-xls" accept=".xlsx,.xls,.xlsm" hidden></div><p class="small muted" style="margin-top:10px">Excel : la première ligne de chaque feuille doit contenir les titres des colonnes (Nom, Entreprise, E-mail, Téléphone…). Toutes les feuilles sont lues.</p></div></div>';
+   '<div class="panel"><h2>Collecte instantanée</h2><p class="small muted">Collez des messages, un annuaire, des e-mails, une conversation WhatsApp : e-mails, téléphones, noms et sites sont repérés automatiquement. Vous pouvez aussi importer un fichier CSV, JSON ou texte.</p><div class="fld"><textarea id="ct-txt" rows="7" placeholder="Nom : …&#10;Entreprise : …&#10;77 123 45 67 · contact@exemple.com"></textarea></div>'+ctSel('ct-dest2','Où ranger les fiches',CT_DEST,'prospects')+'<div class="row"><button class="btn" data-ct="extract">Extraire et ajouter</button><button class="btn line" data-ct="pickfile">Importer un fichier</button><input type="file" id="ct-file" accept=".csv,.json,.txt,text/*" hidden><button class="btn" data-ct="pickxls">Importer un fichier Excel</button><input type="file" id="ct-xls" accept=".xlsx,.xls,.xlsm" hidden></div><p class="small muted" style="margin-top:10px">Excel : la première ligne de chaque feuille doit contenir les titres des colonnes (Nom, Entreprise, E-mail, Téléphone…). Toutes les feuilles sont lues.</p></div></div>'+
+   '<div class="panel"><h2>Fiches enregistrées</h2><div class="row" style="margin-bottom:10px"><input id="ct-q" type="search" value="'+esc(ctQ)+'" placeholder="Rechercher une fiche…" aria-label="Rechercher une fiche" style="flex:1;min-width:180px"><button class="btn line sm" data-ct="delall" data-k="prosp">Tout supprimer : Prospection commerciale</button><button class="btn line sm" data-ct="delall" data-k="prospects">Tout supprimer : Prospects</button></div><div id="ctfiches">'+ctFiches()+'</div></div>';
 }
 function ctInstant(text,name){
   var dest=($('#ct-dest2')||{}).value||'prospects',recs;
@@ -1895,7 +1912,7 @@ function ctInstant(text,name){
     else recs=ctExtract(text);
   }catch(e){toast('Contenu illisible.');return;}
   if(!recs.length){toast('Aucun contact reconnu (e-mail ou téléphone attendu).');return;}
-  var id='manuel-'+dest,res=ctIngest(recs,dest,'Collecte instantanée',id);
+  var id='I'+Date.now(),res=ctIngest(recs,dest,'Collecte instantanée',id,name||'Texte collé');
   CT().seen[id]=[];ctLog(name||'Texte collé','Collecte',res.n,res.dup);save();
   toast(res.n+' fiche'+(res.n>1?'s':'')+' ajoutée'+(res.n>1?'s':'')+(res.dup?', '+res.dup+' doublon'+(res.dup>1?'s':'')+' ignoré'+(res.dup>1?'s':''):'')+'.');
   var t=$('#ct-txt');if(t)t.value='';ctRefresh();
@@ -1908,7 +1925,7 @@ document.addEventListener('click',function(e){
   else if(a==='site'){syncOrders(true);}
   else if(a==='run'&&s){ctRun(s);toast('Collecte en cours…');}
   else if(a==='toggle'&&s){s.on=!s.on;save();ctRefresh();}
-  else if(a==='del'&&s){if(confirm('Retirer cette source ? Les fiches déjà collectées sont conservées.')){c.src=c.src.filter(function(x){return x!==s;});delete c.seen[s.id];save();ctRefresh();}}
+  else if(a==='del'&&s){if(confirm('Retirer cette source ?')){c.src=c.src.filter(function(x){return x!==s;});delete c.seen[s.id];if(c.batches.some(function(b){return b.id===s.id;})&&confirm('Supprimer aussi les fiches collectées par cette source ?'))ctDelBatch(s.id);save();ctRefresh();}}
   else if(a==='add'){
     var v=function(i){return ($('#'+i)||{}).value||'';},url=v('f-ct-url').trim();
     if(!/^https?:\/\//i.test(url)){toast('Collez une adresse commençant par https://');return;}
@@ -1918,6 +1935,9 @@ document.addEventListener('click',function(e){
   else if(a==='extract'){ctInstant(($('#ct-txt')||{}).value||'');}
   else if(a==='pickfile'){$('#ct-file').click();}
   else if(a==='pickxls'){$('#ct-xls').click();}
+  else if(a==='delb'){var b=c.batches.filter(function(x){return x.id===el.dataset.id;})[0];if(b&&confirm('Supprimer la liste « '+b.nom+' » et ses '+ctCount(b)+' fiche(s) ?')){ctDelBatch(b.id);ctRefresh();toast('Liste supprimée.');}}
+  else if(a==='delf'){if(el.dataset.k==='prosp')PC().leads=PC().leads.filter(function(x){return x.id!==el.dataset.id;});else S.prospects=S.prospects.filter(function(x){return x.id!==el.dataset.id;});save();ctRefresh();}
+  else if(a==='delall'){var k=el.dataset.k,n=k==='prosp'?PC().leads.length:S.prospects.length;if(n&&confirm('Supprimer définitivement les '+n+' fiches de « '+(k==='prosp'?'Prospection commerciale':'Prospects')+' » ?'+(k==='prospects'?' Leurs devis et diagnostics seront supprimés aussi.':''))){if(k==='prosp')PC().leads=[];else S.prospects=[];c.batches=c.batches.filter(function(b){return b.dest!==k;});save();ctRefresh();toast('Fiches supprimées.');}else if(!n)toast('Aucune fiche à supprimer.');}
 });
 document.addEventListener('change',function(e){
   var el=e.target;if(el.id!=='ct-file'||!el.files||!el.files[0])return;
@@ -1935,13 +1955,14 @@ function ctExcel(f){
     var wb=XLSX.read(a[1],{type:'array'}),recs=[];
     wb.SheetNames.forEach(function(n){XLSX.utils.sheet_to_json(wb.Sheets[n],{defval:'',raw:false}).forEach(function(r){recs.push(r);});});
     if(!recs.length){toast('Aucune ligne trouvée dans le fichier.');return;}
-    var dest=($('#ct-dest2')||{}).value||'prospects',id='manuel-'+dest,res=ctIngest(recs,dest,'Import Excel',id);
+    var dest=($('#ct-dest2')||{}).value||'prospects',id='I'+Date.now(),res=ctIngest(recs,dest,'Import Excel',id,f.name);
     CT().seen[id]=[];ctLog(f.name,'Collecte',res.n,res.dup);save();
     toast(res.n+' fiche'+(res.n>1?'s':'')+' importée'+(res.n>1?'s':'')+(res.dup?', '+res.dup+' doublon'+(res.dup>1?'s':'')+' ignoré'+(res.dup>1?'s':''):'')+'.');
     ctRefresh();
   }).catch(function(){toast('Import Excel impossible (connexion requise la première fois). Enregistrez le fichier en CSV et utilisez « Importer un fichier ».');});
 }
 document.addEventListener('change',function(e){var el=e.target;if(el.id!=='ct-xls'||!el.files||!el.files[0])return;var f=el.files[0];el.value='';ctExcel(f);});
+document.addEventListener('input',function(e){if(e.target.id==='ct-q'){ctQ=e.target.value;var f=$('#ctfiches');if(f)f.innerHTML=ctFiches();}});
 setTimeout(ctDue,5000);
 setInterval(function(){if(unlocked&&!document.hidden)ctDue();},60000);
 
